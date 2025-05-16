@@ -59,6 +59,9 @@ pipeline {
 
     //     stage('Unit Testing') {
     //         steps {
+    //            options {
+                      retry(2)
+                    }
     //             sh '''
     //                 echo "$MONGO_DB_CREDS"
     //                 echo "monogdb-usrname - $MONGO_USERNAME"
