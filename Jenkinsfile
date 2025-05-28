@@ -7,6 +7,8 @@ pipeline {
         MONGO_USERNAME = credentials('mongo-db-username')
         MONGO_PASSWORD = credentials('mongo-db-password')
         SONAR_SCANNER_HOME = tool 'sonarqube-7-1-0';
+        GITEA_TOKEN = credentials('gitea-api-token')
+
     }
 
     stages {
@@ -58,10 +60,8 @@ pipeline {
         }
 
     //     stage('Unit Testing') {
+    //         options { retry(2) } 
     //         steps {
-    //            options {
-                      retry(2)
-                    }
     //             sh '''
     //                 echo "$MONGO_DB_CREDS"
     //                 echo "monogdb-usrname - $MONGO_USERNAME"
@@ -86,29 +86,194 @@ pipeline {
 
         stage('SAST - SonarQube') {
             steps {
-                sh '''
-                    echo $SONAR_SCANNER_HOME
-                    $SONAR_SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectKey=solar \
-                        -Dsonar.sources=. \
-                        -Dsonar.host.url=http://192.168.71.120:9000 \
-                        -Dsonar.javascript.lcov.reportPaths=./coverage/lcov.info \
-                        -Dsonar.login=sqa_57d6faf64e4057eafb983b34c86b0fc66df8184a
+                sh 'sleep 5s'
+                // sh '''
+                //     echo $SONAR_SCANNER_HOME
+                //     $SONAR_SCANNER_HOME/bin/sonar-scanner \
+                //         -Dsonar.projectKey=solar \
+                //         -Dsonar.sources=. \
+                //         -Dsonar.host.url=http://192.168.71.120:9000 \
+                //         -Dsonar.javascript.lcov.reportPaths=./coverage/lcov.info \
+                //         -Dsonar.login=sqa_57d6faf64e4057eafb983b34c86b0fc66df8184a
 
+                // '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'printenv'
+                sh 'docker build -t vishwakarmarohit750/solar-system:$GIT_COMMIT .'
+            }
+        }
+
+        stage('Trivy Vulnerability Scanner') {
+            steps {
+                sh '''
+                    trivy image vishwakarmarohit750/solar-system:$GIT_COMMIT \
+                        --severity LOW,MEDIUM,HIGH \
+                        --exit-code 0 \
+                        --quiet \
+                        --format json -o trivy-image-MEDIUM-results.json
+                    
+                    trivy image vishwakarmarohit750/solar-system:$GIT_COMMIT \
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --quiet \
+                        --format json -o trivy-image-CRITICAL-results.json                  
+                '''
+            }
+            post {
+                always {
+                    sh '''
+                        trivy convert \
+                        --format template --template "@/usr/local/share/trivy/templates/html.tpl" \
+                        --output trivy-image-MEDIUM-results.html trivy-image-MEDIUM-results.json
+                        
+                        trivy convert \
+                        --format template --template "@/usr/local/share/trivy/templates/html.tpl" \
+                        --output trivy-image-CRITICAL-results.html trivy-image-CRITICAL-results.json
+
+                        trivy convert \
+                        --format template --template "@/usr/local/share/trivy/templates/junit.tpl" \
+                        --output trivy-image-MEDIUM-results.xml trivy-image-MEDIUM-results.json
+                        
+                        trivy convert \
+                        --format template --template "@/usr/local/share/trivy/templates/junit.tpl"\
+                        --output trivy-image-CRITICAL-results.xml trivy-image-CRITICAL-results.json
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withDockerRegistry(credentialsId: 'DockerHub', url: '') {
+                    sh 'docker push vishwakarmarohit750/solar-system:$GIT_COMMIT'
+                }
+            }
+        }
+
+        stage('Deploy - AWS EC2') {
+            when {
+                branch 'feature/*'
+            }
+            steps {
+                sh 'sleep 5s'
+                // script {
+                //         sshagent(['aws-dev-deploy-ec2-instance']) {
+                //             sh '''
+                //                 ssh -o StrictHostKeyChecking=no ubuntu@3.140.244.188 "
+                //                     if sudo docker ps -a | grep -q "solar-system"; then
+                //                         echo "Container found. Stopping..."
+                //                             sudo docker stop "solar-system" && sudo docker rm "solar-system"
+                //                         echo "Container stopped and removed."
+                //                     fi
+                //                         sudo docker run --name solar-system \
+                //                             -e MONGO_URI=$MONGO_URI \
+                //                             -e MONGO_USERNAME=$MONGO_USERNAME \
+                //                             -e MONGO_PASSWORD=$MONGO_PASSWORD \
+                //                             -p 3000:3000 -d vishwakarmarohit750/solar-system:$GIT_COMMIT
+                //                 "
+                //             '''
+                //     }
+                // }
+            }
+            
+        }
+
+        stage('Integration Testing - AWS EC2') {
+            when {
+                branch 'feature/*'
+            }
+            steps {
+                sh 'sleep 5s'
+                // sh 'printenv | grep -i branch'
+                // withAWS(credentials: 'aws-s3-ec2-lambda-creds', region: 'us-east-1') {
+                //     sh  '''
+                //         bash integration-testing-ec2.sh
+                //     '''
+                }
+        }
+        
+
+        stage('K8s Update Image Tag') {
+            when {
+                branch 'PR*'
+            }
+            steps {
+                sh 'git clone -b main http://192.168.71.120:3000/Jenkins_test/solar-system-gitops-argocd.git'
+                dir("solar-system-gitops-argocd/kubernetes") {
+                    sh '''
+                        #### Replace Docker Tag ####
+                        git checkout main
+                        git checkout -b feature-$BUILD_ID
+                        sed -i "s#vishwakarmarohit750.*#vishwakarmarohit750/solar-system:$GIT_COMMIT#g" deployment.yml
+                        cat deployment.yml
+                    
+                        #### Commit and Push to Feature Branch ####
+                        git config --global user.email "vishwakarmarohit750@gmail.com"
+                        git remote set-url origin http://$GITEA_TOKEN@192.168.71.120:3000/Jenkins_test/solar-system-gitops-argocd                      
+                        git add .
+                        git commit -am "Update Docker image"
+                        git push -u origin feature-$BUILD_ID
+                    '''
+                }
+            }
+
+        }
+
+        stage('K8s - Raise PR') { 
+            when {
+                branch 'PR*'
+            }
+            steps {
+                sh '''
+                    curl -X 'POST' \
+                    'http://192.168.71.120:3000/api/v1/repos/Jenkins_test/solar-system-gitops-argocd/pulls' \
+                    -H 'accept: application/json' \
+                    -H 'Authorization: token $GITEA_TOKEN' \
+                    -d '{
+                        "assignee": "rohit",
+                            "assignees": [
+                                "rohit"
+                            ],
+                        "base": "main",
+                        "body": "Updated docker image in deployment manifest",
+                        "head": "feature-$BUILD_ID"
+                        "title": "Updated Docker Image"
+                    }' 
                 '''
             }
         }
+
+
     }    
+
     post {
         always {
-                // One or more steps need to be included within each condition's block.
-                junit allowEmptyResults: true, keepProperties: true, testResults: 'dependency-check-junit.xml'
+            script {
+                if (fileExists('solar-system-gitops-argocd')) {
+                    sh 'rm -rf solar-system-gitops-argocd'
+                }
+            }
 
-                publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: './', reportFiles: 'dependency-check-report.html', reportName: 'Dependency check HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+            junit allowEmptyResults: true, keepProperties: true, testResults: 'trivy-image-MEDIUM-results.xml'
 
-                junit allowEmptyResults: true, keepProperties: true, testResults: 'test-results.xml'
+            junit allowEmptyResults: true, keepProperties: true, testResults: 'trivy-image-CRITICAL-results.xml'
+
+            publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: './', reportFiles: 'trivy-image-MEDIUM-results.html', reportName: 'Trivy Image Medium HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+
+            publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: './', reportFiles: 'trivy-image-CRITICAL-results.html', reportName: 'Trivy Image Critical HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+
+            // One or more steps need to be included within each condition's block.
+            junit allowEmptyResults: true, keepProperties: true, testResults: 'dependency-check-junit.xml'
+
+            publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: './', reportFiles: 'dependency-check-report.html', reportName: 'Dependency check HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+
+            junit allowEmptyResults: true, keepProperties: true, testResults: 'test-results.xml'
                 
-                publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: 'coverage/lcov-report', reportFiles: 'index.html', reportName: 'Code Coverage HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+            publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: 'coverage/lcov-report', reportFiles: 'index.html', reportName: 'Code Coverage HTML Report', reportTitles: '', useWrapperFileDirectly: true])
 
         }
 
