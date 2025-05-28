@@ -188,12 +188,13 @@ pipeline {
             }
             steps {
                 sh 'sleep 5s'
-                // sh 'printenv | grep -i branch'
+                sh 'printenv | grep -i branch'
                 // withAWS(credentials: 'aws-s3-ec2-lambda-creds', region: 'us-east-1') {
                 //     sh  '''
                 //         bash integration-testing-ec2.sh
                 //     '''
-                }
+                // }
+            }
         }
         
 
@@ -247,7 +248,54 @@ pipeline {
             }
         }
 
+        stage('App Deployed?') {
+            steps {
+                timeout(time: 1, unit: 'DAYS') {
+                    input message: 'Is the PR Merged and ArgoCD Synced?', ok: 'YES! PR is Merged and ArgoCD Synced'
+                }
+            }
+        }
 
+        stage('DAST - OWASP ZAP') {
+            when {
+                branch "PR*"
+            }
+            steps {
+                sh '''
+                    #### REPLCAE below with kubernetes http://IP_ADDRESS:3000/api-docs/ ####
+                    chmod 777 $(pwd)
+                    docker run -v $(pwd):/zap/wrk/:rw ghrc.io/zaproxy/zaproxy zap-api-scan.py \
+                    -t http://192.168.58.2:30000/api-docs/ \
+                    -f openapi \
+                    -r zap_report.html \
+                    -w zap_report.md \
+                    -J zap_json_report.json \
+                    -x zap_xml_report.xml \
+                    -c zap_ignore_rules
+                '''
+            }
+        }
+        stage('Upload - AWS S3'){
+            when {
+                branch 'PR*'
+            }
+            steps {
+                withAWS(credentials: 'aws-s3-ec2-lambda-creds', region: 'us-east-1') {
+                    sh '''
+                        ls -ltr
+                        mkdir reports-$BUILD_ID
+                        cp -rf coverage/ reports-$BUILD_ID
+                        cp dependency*.* test-result.xml trivy*.* zap*.* reports-$BUILD_ID 
+                        ls -ltr reports-$BUILD_ID
+                    '''
+                    s3Upload(
+                        file: "reports-$BUILD_ID",
+                        bucket: 'solar-system-jenkins-report-bucket',
+                        path: "jenkins-$BUILD_ID/"
+                    )
+                }
+            }
+        }
     }    
 
     post {
@@ -274,6 +322,8 @@ pipeline {
             junit allowEmptyResults: true, keepProperties: true, testResults: 'test-results.xml'
                 
             publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: 'coverage/lcov-report', reportFiles: 'index.html', reportName: 'Code Coverage HTML Report', reportTitles: '', useWrapperFileDirectly: true])
+
+            publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, icon: '', keepAll: true, reportDir: './', reportFiles: 'zap_report.html', reportName: 'DAST - OWASP ZAP Report', reportTitles: '', useWrapperFileDirectly: true])
 
         }
 
