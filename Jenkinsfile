@@ -1,3 +1,21 @@
+def slackNotificationMethod(String buildStatus = 'STARTED') {
+    buildStatus = buildStatus ?: 'SUCCESS'
+
+    def color
+
+    if (buildStatus == 'SUCCESS') {
+        color = '#47ec05'
+    } else if (buildStatus == 'UNSTABLE') {
+        color = '#d5ee0d'
+    } else {
+        color = '#ec2805'
+    }
+
+    def msg = "${buildStatus}: `${env.JOB_NAME}` #${env.BUILD_NUMBER}:\n${env.BUILD_URL}"
+
+    slackSend(color: color, message: msg)
+}
+
 pipeline {
     agent any
 
@@ -296,10 +314,23 @@ pipeline {
                 }
             }
         }
+        
+        stage('Deploy to Prod?') {
+            when {
+                branch 'main'
+            }
+            steps {
+                timeout(time:1, unit:'DAYS'){
+                    input message: 'Deploy to Producation?', ok: 'YES! Let us try this on Production', submitter: 'rohit'
+                }
+            }
+        }
     }    
 
     post {
         always {
+            slackNotificationMethod("${currentBuild.result}")
+
             script {
                 if (fileExists('solar-system-gitops-argocd')) {
                     sh 'rm -rf solar-system-gitops-argocd'
