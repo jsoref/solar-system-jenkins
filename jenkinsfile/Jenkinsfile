@@ -111,11 +111,15 @@ pipeline {
 
         stage('Trivy Vulnerability Scanner') {
             steps {    //using Jenkins Shared libraries
-                trivyScan.vulnerability("vishwakarmarohit750/solar-system:$GIT_COMMIT")
+                script {
+                    trivyScan.vulnerability("vishwakarmarohit750/solar-system:$GIT_COMMIT")
+                }
             }
             post {
                 always {
-                    trivyScan.reportsConverter()
+                    script {
+                        trivyScan.reportsConverter()
+                    }
                 }
             }
         }
