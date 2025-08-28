@@ -242,7 +242,7 @@ pipeline {
                 sh '''
                     #### REPLCAE below with kubernetes http://IP_ADDRESS:3000/api-docs/ ####
                     chmod 777 $(pwd)
-                    docker run -v $(pwd):/zap/wrk/:rw ghrc.io/zaproxy/zaproxy zap-api-scan.py \
+                    docker run -v $(pwd):/zap/wrk/:rw ghcr.io/zaproxy/zaproxy zap-api-scan.py \
                     -t http://192.168.58.2:30000/api-docs/ \
                     -f openapi \
                     -r zap_report.html \
